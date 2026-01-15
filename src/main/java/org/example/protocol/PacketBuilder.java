@@ -13,13 +13,15 @@ public class PacketBuilder {
     private static long sequenceId = 0;
 
     /**
-     * Creates a 64-byte packet for the "Remote Open Door" command (Function ID 0x40).
+     * Creates a 64-byte packet for the "One-to-many remote control" command (Function ID 0x40).
+     * This command can be used to control relays and LEDs.
      *
-     * @param cfg   The configuration of the target controller board.
-     * @param doorNumber The door/relay to open (1-4).
+     * @param cfg         The configuration of the target controller board.
+     * @param doorNumber  The door number (must be 1).
+     * @param floorNumber The floor/device number to control (1-40 for relays/LEDs).
      * @return The 64-byte command packet.
      */
-    public static byte[] remoteOpenDoor(BoardConfig cfg, int doorNumber) {
+    public static byte[] sendControlCommand(BoardConfig cfg, int doorNumber, int floorNumber) {
         // The total packet size is 64 bytes, as defined in the SDK.
         byte[] packet = new byte[64];
 
@@ -39,11 +41,16 @@ public class PacketBuilder {
         packet[7] = (byte) ((sn >> 24) & 0xFF);
 
         // --- Data Block (starts at byte 8) ---
-        // For function 0x40, the only data is the door number.
-        // Byte 8: The door number (1-4) to operate.
+        // Byte 8: Door number (must be 1 for this command).
         packet[8] = (byte) doorNumber;
+        // Byte 9: Floor number (1-40 for NO, 41-80 for NC). This controls the specific relay/LED.
+        packet[9] = (byte) floorNumber;
+        
+        // Bytes 10-11: Action duration (0 for default).
+        packet[10] = 0;
+        packet[11] = 0;
 
-        // Bytes 9-39: Unused for this function, remain 0.
+        // Bytes 12-39: Unused for this function, remain 0.
 
         // Bytes 40-43: Sequence ID (a unique, incrementing number for each packet)
         // This is crucial for the controller to accept the command.

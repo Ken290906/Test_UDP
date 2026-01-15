@@ -36,12 +36,13 @@ public class LedService {
         if (locationOptional.isPresent()) {
             Location location = locationOptional.get();
             BoardConfig board = location.getBoard();
-            int doorNumber = location.getRelayNumber();
+            int floorNumber = location.getRelayNumber();
 
-            System.out.println("Product found at location: Board SN " + board.serialNumber + ", Relay/Door " + doorNumber);
+            System.out.println("Product found at location: Board SN " + board.serialNumber + ", Floor/Device " + floorNumber);
 
             // 3. Build the UDP packet using the retrieved information.
-            byte[] packet = PacketBuilder.remoteOpenDoor(board, doorNumber);
+            // The door number must be 1 for this command.
+            byte[] packet = PacketBuilder.sendControlCommand(board, 1, floorNumber);
 
             // 4. Send the command.
             System.out.println("Sending 'Remote Open Door' command to IP " + board.ip + "...");

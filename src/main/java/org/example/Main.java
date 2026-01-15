@@ -19,14 +19,20 @@ public class Main {
         Runnable onScanAction = () -> {
             try {
                 System.out.println("... Triggering UDP command.");
-                BoardConfig myBoard = new BoardConfig("192.168.0.0", 60000, 175111864);
-                int doorNumberToTest = 1; // Control Relay/Door 1
+                // Use the broadcast IP address as you suggested.
+                BoardConfig myBoard = new BoardConfig("255.255.255.255", 60000, 175111864); // Corrected serial number from screenshot: 0x0A6FFEB8
 
-                // Build and send the packet
-                byte[] packet = PacketBuilder.remoteOpenDoor(myBoard, doorNumberToTest);
+                int doorNumber = 1; // This must be 1 according to the document.
+                int floorNumber = 5;  // Control floor 5 (LD05) as shown in the screenshot.
+
+                System.out.println("... Sending command to control Floor/Device " + floorNumber);
+
+                // Build and send the packet.0006649614
+
+                byte[] packet = PacketBuilder.sendControlCommand(myBoard, doorNumber, floorNumber);
                 UDPClient.send(myBoard, packet);
 
-                System.out.println("... Command for LED " + doorNumberToTest + " sent successfully!");
+                System.out.println("... Command for Floor/Device " + floorNumber + " sent successfully!");
 
             } catch (Exception e) {
                 System.err.println("[ERROR] Failed to send UDP command: " + e.getMessage());
