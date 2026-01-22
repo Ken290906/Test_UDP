@@ -18,9 +18,15 @@ public class InventoryService {
     // --- Data Storage ---
     private final Map<String, String> rfidToProductMap = new HashMap<>();
     private final Map<String, Integer> productToLedMap = new HashMap<>();
-    private final Set<String> availableRfidTags = new HashSet<>();
+    // private final Set<String> availableRfidTags = new HashSet<>(); // No longer needed
     private String lastScannedProduct = null;
     private final BoardConfig boardConfig;
+
+    // --- State Management ---
+    private String rfidWaitingForExportConfirmation = null;
+    private Thread flashingThread;
+    private int flashingLedNumber = -1; // -1 indicates no LED is flashing
+    private volatile boolean stopFlashing = false;
 
     /**
      * Constructor to initialize the service.
@@ -32,12 +38,7 @@ public class InventoryService {
 
     private void initializeSampleData() {
         System.out.println("Initializing system with sample data...");
-        // 5 sample RFID tags
-        availableRfidTags.add("0006649621");
-        availableRfidTags.add("0006649618");
-        availableRfidTags.add("0006652658");
-        availableRfidTags.add("0006649614");
-        availableRfidTags.add("0006649617");
+        // RFID tags are no longer pre-defined. Any tag can be used.
 
         // 5 products (from QR codes) mapped to 5 LEDs (floors 1-5)
         productToLedMap.put("PRD1", 1);
@@ -46,30 +47,38 @@ public class InventoryService {
         productToLedMap.put("PRD4", 4);
         productToLedMap.put("PRD5", 5);
 
-        System.out.println("Ready to scan. Waiting for input from scanner...");
+        System.out.println("Ready to scan. Waiting for input from scanner or 'confirm' command...");
     }
 
     /**
-     * Parses and handles raw input from a scanner (acting as a keyboard wedge).
-     * @param inputLine The line of text from the scanner.
+     * Parses and handles raw input from a scanner or user command.
+     * @param inputLine The line of text from the scanner or console.
      */
     public void handleInput(String inputLine) {
-        String scannedData = inputLine.trim();
-        if (scannedData.isEmpty()) {
+        String command = inputLine.trim();
+        if (command.isEmpty()) {
             return;
         }
 
-        // 1. Check if the scanned data is a known Product ID (from a QR code)
-        if (productToLedMap.containsKey(scannedData)) {
-            handleProductScan(scannedData);
+        // Priority 1: Handle confirmation for a pending export
+        if ("confirm".equalsIgnoreCase(command)) {
+            handleExportConfirmation();
+            return; // Done
         }
-        // 2. Check if the scanned data is a known RFID tag
-        else if (availableRfidTags.contains(scannedData)) {
-            handleRfidScan(scannedData);
+
+        // If an export is pending confirmation, block other operations.
+        if (this.rfidWaitingForExportConfirmation != null) {
+            System.out.println("[ACTION REQUIRED] An export is pending for RFID '" + this.rfidWaitingForExportConfirmation + "'. Please find the item and type 'confirm'.");
+            return;
         }
-        // 3. Otherwise, the data is unknown
+
+        // Priority 2: Handle product QR scan (start of import)
+        if (command.startsWith("PRD") && productToLedMap.containsKey(command)) {
+            handleProductScan(command);
+        }
+        // Priority 3: Handle RFID scan (import step 2 or start of export)
         else {
-            System.out.println("[ERROR] Unknown data scanned: '" + scannedData + "'. Please scan a valid product QR code or RFID tag.");
+            handleRfidScan(command);
         }
     }
 
@@ -81,16 +90,15 @@ public class InventoryService {
 
     private void handleRfidScan(String rfidTag) {
         // This could be "Import: Step 2" or "Export"
-        
+
         // Check if this is the second step of an import process
         if (this.lastScannedProduct != null) {
             // --- IMPORT LOGIC ---
             System.out.println("IMPORT: Associating RFID tag '" + rfidTag + "' with product '" + this.lastScannedProduct + "'.");
-            
+
             if (rfidToProductMap.containsKey(rfidTag)) {
                  System.out.println("[WARN] This RFID tag is already associated with product '" + rfidToProductMap.get(rfidTag) + "'. Please handle the export first.");
-                 // Clear the state so the user doesn't accidentally associate the next RFID scan
-                 this.lastScannedProduct = null;
+                 this.lastScannedProduct = null; // Clear state
                  return;
             }
 
@@ -100,29 +108,101 @@ public class InventoryService {
                 System.out.println("-> Turning ON LED " + ledNumber + " for product " + this.lastScannedProduct);
                 controlLed(ledNumber, true);
             }
-            
+
             this.lastScannedProduct = null; // Reset for the next operation
 
         } else {
-            // --- EXPORT LOGIC ---
+            // --- EXPORT or FREE SCAN LOGIC ---
             if (rfidToProductMap.containsKey(rfidTag)) {
+                // --- START EXPORT PROCESS ---
                 String productId = rfidToProductMap.get(rfidTag);
-                System.out.println("EXPORT: Product '" + productId + "' is being shipped.");
-                
+                System.out.println("EXPORT: Found product '" + productId + "' associated with RFID '" + rfidTag + "'.");
+
                 Integer ledNumber = productToLedMap.get(productId);
                 if (ledNumber != null) {
-                    System.out.println("-> Turning ON LED " + ledNumber);
-                    controlLed(ledNumber, true);
+                    System.out.println("-> Starting continuous flashing for LED " + ledNumber + " to locate the item.");
+                    startFlashingLed(ledNumber); // Start flashing
                 }
 
-                rfidToProductMap.remove(rfidTag); // Un-assign the RFID tag
-                System.out.println("-> RFID tag '" + rfidTag + "' is now free.");
+                // Set state to wait for confirmation instead of completing the export
+                this.rfidWaitingForExportConfirmation = rfidTag;
+                System.out.println("ACTION: Please find the item. Type 'confirm' and press Enter after you have picked it up.");
 
             } else {
                 System.out.println("INFO: Scanned free RFID tag '" + rfidTag + "'. Not associated with any product.");
             }
         }
     }
+
+    /**
+     * Handles the confirmation command to finalize an export.
+     */
+    private void handleExportConfirmation() {
+        if (this.rfidWaitingForExportConfirmation == null) {
+            System.out.println("[INFO] No export operation is waiting for confirmation.");
+            return;
+        }
+
+        String rfidTag = this.rfidWaitingForExportConfirmation;
+        String productId = rfidToProductMap.get(rfidTag);
+
+        System.out.println("CONFIRMED: Completing export for product '" + productId + "' with RFID '" + rfidTag + "'.");
+
+        // Stop flashing the LED
+        if (flashingLedNumber != -1) {
+            stopFlashingLed();
+            // Send the final OFF command (simulated)
+            System.out.println("-> Sending final OFF command for LED " + flashingLedNumber);
+            controlLed(flashingLedNumber, false);
+        }
+
+        // Complete the export by removing the association
+        rfidToProductMap.remove(rfidTag);
+        System.out.println("-> RFID tag '" + rfidTag + "' is now free.");
+
+        // Reset the state
+        this.rfidWaitingForExportConfirmation = null;
+        System.out.println("System is ready for the next operation.");
+    }
+
+    private void startFlashingLed(int ledNumber) {
+        stopFlashing = false;
+        flashingLedNumber = ledNumber;
+        System.out.println("-> LED " + flashingLedNumber + " is now flashing continuously. Waiting for 'confirm'...");
+        flashingThread = new Thread(() -> {
+            while (!stopFlashing) {
+                try {
+                    // Send ON command silently
+                    byte[] packet = PacketBuilder.sendControlCommand(this.boardConfig, 1, flashingLedNumber);
+                    UDPClient.send(this.boardConfig, packet);
+                    Thread.sleep(500); // Flash every 500ms
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    System.out.println("Flashing thread interrupted.");
+                    break;
+                } catch (Exception e) {
+                    System.err.println("[ERROR] Flashing LED failed: " + e.getMessage());
+                }
+            }
+            System.out.println("Flashing thread stopped for LED " + flashingLedNumber);
+        });
+        flashingThread.start();
+    }
+
+    private void stopFlashingLed() {
+        stopFlashing = true;
+        if (flashingThread != null) {
+            flashingThread.interrupt(); // Interrupt the thread to stop it
+            try {
+                flashingThread.join(1000); // Wait for the thread to finish (max 1 second)
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            flashingThread = null;
+        }
+        flashingLedNumber = -1;
+    }
+
 
     /**
      * Sends a command to control an LED.
